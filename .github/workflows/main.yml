@@ -10,7 +10,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest  # 1x consumo vs 10x do macOS
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repositório
@@ -19,7 +19,12 @@ jobs:
       - name: Instalar dependências
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y clang lld python3-pip zip unzip file
+          sudo apt-get install -y \
+            clang \
+            gcc-aarch64-linux-gnu \
+            g++-aarch64-linux-gnu \
+            python3-pip \
+            zip unzip file
           pip3 install lief --break-system-packages
 
       - name: Baixar GTA SA IPA
@@ -47,29 +52,34 @@ jobs:
             --json offsets_report.json
           cat src/ios_offsets.h
 
-      - name: Compilar libSAMP.dylib (ARM64 iOS cross-compile)
+      - name: Compilar libSAMP.dylib (ARM64)
         run: |
           mkdir -p build
 
-          # Ubuntu usa clang com target iOS ARM64 direto
-          # mach-o/dyld.h não existe no Linux — usamos stub local
+          # Stub do mach-o/dyld.h (não existe no Linux)
           mkdir -p stubs/mach-o
           cat > stubs/mach-o/dyld.h << 'EOF'
-          #pragma once
-          #include <stdint.h>
-          #ifdef __cplusplus
-          extern "C" {
-          #endif
-          uint32_t _dyld_image_count(void);
-          const char* _dyld_get_image_name(uint32_t);
-          const void* _dyld_get_image_header(uint32_t);
-          #ifdef __cplusplus
-          }
-          #endif
-          EOF
+#pragma once
+#include <stdint.h>
+#ifdef __cplusplus
+extern "C" {
+#endif
+uint32_t _dyld_image_count(void);
+const char* _dyld_get_image_name(uint32_t);
+const void* _dyld_get_image_header(uint32_t);
+#ifdef __cplusplus
+}
+#endif
+EOF
+
+          # Sysroot do aarch64 para ter sys/time.h, bits/, etc
+          SYSROOT=$(aarch64-linux-gnu-gcc -print-sysroot 2>/dev/null || echo "/usr/aarch64-linux-gnu")
+          [ -d "$SYSROOT" ] || SYSROOT="/usr/aarch64-linux-gnu"
 
           CFLAGS=(
             -target aarch64-linux-gnu
+            --sysroot="$SYSROOT"
+            -I/usr/aarch64-linux-gnu/include
             -O2
             -fvisibility=hidden
             -fPIC
@@ -89,9 +99,11 @@ jobs:
             -I ttmath/
             -I stubs/
           )
+
           LDFLAGS=(
             -shared
             -target aarch64-linux-gnu
+            --sysroot="$SYSROOT"
             -fPIC
           )
 
@@ -113,7 +125,6 @@ jobs:
             OBJECTS+=("$obj")
           done
 
-          # Aguarda todos compilarem
           FAIL=0
           for pid in "${PIDS[@]}"; do
             wait $pid || FAIL=1
