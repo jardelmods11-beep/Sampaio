@@ -19,13 +19,15 @@ jobs:
       - name: Instalar dependências
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y \
-            clang \
-            gcc-aarch64-linux-gnu \
-            g++-aarch64-linux-gnu \
-            python3-pip \
-            zip unzip file
+          sudo apt-get install -y clang gcc-aarch64-linux-gnu g++-aarch64-linux-gnu python3-pip zip unzip file
           pip3 install lief --break-system-packages
+
+      - name: Criar stub mach-o/dyld.h
+        run: |
+          mkdir -p stubs/mach-o
+          printf '#pragma once\n#include <stdint.h>\n#ifdef __cplusplus\nextern "C" {\n#endif\nuint32_t _dyld_image_count(void);\nconst char* _dyld_get_image_name(uint32_t);\nconst void* _dyld_get_image_header(uint32_t);\n#ifdef __cplusplus\n}\n#endif\n' > stubs/mach-o/dyld.h
+          echo "Stub criado:"
+          cat stubs/mach-o/dyld.h
 
       - name: Baixar GTA SA IPA
         run: |
@@ -55,84 +57,37 @@ jobs:
       - name: Compilar libSAMP.dylib (ARM64)
         run: |
           mkdir -p build
+          SYSROOT=/usr/aarch64-linux-gnu
 
-          # Stub do mach-o/dyld.h (não existe no Linux)
-          mkdir -p stubs/mach-o
-          cat > stubs/mach-o/dyld.h << 'EOF'
-#pragma once
-#include <stdint.h>
-#ifdef __cplusplus
-extern "C" {
-#endif
-uint32_t _dyld_image_count(void);
-const char* _dyld_get_image_name(uint32_t);
-const void* _dyld_get_image_header(uint32_t);
-#ifdef __cplusplus
-}
-#endif
-EOF
+          CFLAGS="-target aarch64-linux-gnu --sysroot=$SYSROOT -I$SYSROOT/include -O2 -fvisibility=hidden -fPIC -std=c++17 -DIOS_PORT -DHOST_ENDIAN_IS_LITTLE -DLITTLE_ENDIAN -DRAKSAMP_CLIENT -DNETCODE_OPENCONNLULZ=6969 -frtti -fexceptions -w -I src/ -I sa_include/ -I raknet/ -I raknet/SAMP/ -I ttmath/ -I stubs/"
+          LDFLAGS="-shared -target aarch64-linux-gnu --sysroot=$SYSROOT -fPIC"
 
-          # Sysroot do aarch64 para ter sys/time.h, bits/, etc
-          SYSROOT=$(aarch64-linux-gnu-gcc -print-sysroot 2>/dev/null || echo "/usr/aarch64-linux-gnu")
-          [ -d "$SYSROOT" ] || SYSROOT="/usr/aarch64-linux-gnu"
-
-          CFLAGS=(
-            -target aarch64-linux-gnu
-            --sysroot="$SYSROOT"
-            -I/usr/aarch64-linux-gnu/include
-            -O2
-            -fvisibility=hidden
-            -fPIC
-            -std=c++17
-            -DIOS_PORT
-            -DHOST_ENDIAN_IS_LITTLE
-            -DLITTLE_ENDIAN
-            -DRAKSAMP_CLIENT
-            -DNETCODE_OPENCONNLULZ=6969
-            -frtti
-            -fexceptions
-            -w
-            -I src/
-            -I sa_include/
-            -I raknet/
-            -I raknet/SAMP/
-            -I ttmath/
-            -I stubs/
-          )
-
-          LDFLAGS=(
-            -shared
-            -target aarch64-linux-gnu
-            --sysroot="$SYSROOT"
-            -fPIC
-          )
-
-          OBJECTS=()
+          OBJECTS=""
           PIDS=()
 
           for cpp in src/*.cpp; do
             obj="build/$(basename ${cpp%.cpp}).o"
-            clang++ "${CFLAGS[@]}" -c "$cpp" -o "$obj" &
+            clang++ $CFLAGS -c "$cpp" -o "$obj" &
             PIDS+=($!)
-            OBJECTS+=("$obj")
+            OBJECTS="$OBJECTS $obj"
           done
 
           for cpp in raknet/*.cpp raknet/SAMP/*.cpp; do
             [ -f "$cpp" ] || continue
             obj="build/raknet_$(basename ${cpp%.cpp}).o"
-            clang++ "${CFLAGS[@]}" -c "$cpp" -o "$obj" &
+            clang++ $CFLAGS -c "$cpp" -o "$obj" &
             PIDS+=($!)
-            OBJECTS+=("$obj")
+            OBJECTS="$OBJECTS $obj"
           done
 
           FAIL=0
           for pid in "${PIDS[@]}"; do
             wait $pid || FAIL=1
           done
-          [ $FAIL -eq 0 ] || { echo "ERRO na compilação"; exit 1; }
+          [ $FAIL -eq 0 ] || { echo "ERRO na compilacao"; exit 1; }
 
           echo "[LD] Linkando..."
-          clang++ "${LDFLAGS[@]}" "${OBJECTS[@]}" -o build/libSAMP.dylib
+          clang++ $LDFLAGS $OBJECTS -o build/libSAMP.dylib
           file build/libSAMP.dylib
           ls -lh build/libSAMP.dylib
 
